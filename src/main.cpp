@@ -45,7 +45,7 @@ constexpr UINT ALERT_ICON_ID = 2;
 
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT,
-    ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING,
+    ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING, ID_SHOW_RUNTIME,
     ID_POLL_FIRST = 500,  // "Check battery every": ID_POLL_FIRST + 0..7
     ID_UPDATE = 200, ID_AUTO_UPDATE,
     ID_LANG_AUTO = 400, ID_LANG_ADD, ID_LANG_FIRST,  // "Language": ID_LANG_FIRST + 0..63
@@ -74,6 +74,7 @@ bool g_hideLastKnown = false;  // hide (last known) / asleep devices from taskba
 bool g_showDisconnectedDevices = false;  // opt-in, explicit driver-reported offline devices only
 bool g_dimSleeping = true;  // dim a sleeping device's last known value (menu option, on by default)
 bool g_recordHistory = true;  // save readings for "Battery history..." (menu option, on by default)
+bool g_showRuntime = true;    // estimated time remaining under the widget percentage (menu option, on by default)
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
@@ -102,6 +103,15 @@ aliases::AliasMap g_aliases;
 
 std::wstring DisplayName(const TrayEntry& e) {
     return aliases::DisplayName(g_aliases, e.st.key, e.st.name);
+}
+
+std::wstring RuntimeText(const std::wstring& key) {
+    if (!g_recordHistory || !g_showRuntime) return L"";
+    const auto estimate = battery_history::RuntimeFor(key);
+    if (estimate.state != battery_history::RuntimeState::Ready) return L"";
+    const int total = std::max(0, static_cast<int>(estimate.hoursRemaining + 0.5));
+    // Compact form for the widget's small secondary line: no space between the number and the unit.
+    return TF(L"~{hours}h", {{L"hours", std::to_wstring(total)}});
 }
 
 void LoadAliases() {
@@ -274,6 +284,8 @@ bool LoadDimSleeping() { return LoadBoolSetting(L"DimSleepingDevices", true); }
 void SaveDimSleeping(bool on) { SaveBoolSetting(L"DimSleepingDevices", on); }
 bool LoadRecordHistory() { return LoadBoolSetting(L"RecordBatteryHistory", true); }
 void SaveRecordHistory(bool on) { SaveBoolSetting(L"RecordBatteryHistory", on); }
+bool LoadShowRuntime() { return LoadBoolSetting(L"ShowRuntimeEstimate", true); }
+void SaveShowRuntime(bool on) { SaveBoolSetting(L"ShowRuntimeEstimate", on); }
 bool LoadWidgetBackground() { return LoadBoolSetting(L"WidgetBackground", false); }
 void SaveWidgetBackground(bool on) { SaveBoolSetting(L"WidgetBackground", on); }
 std::wstring LoadWidgetMonitor() {
@@ -600,6 +612,8 @@ void UpdateWidget() {
         it.percent = offline ? -1 : (e->st.percent >= 0 ? e->st.percent : e->lastPct);
         if (offline) it.text = L"\u00D7";  // clear status, not a stale percentage
         else if (e->st.percent >= 0) it.text = T(e->st.levelText);
+        if (!offline && !e->st.asleep && e->st.percent >= 0 && e->st.levelText.empty())
+            it.runtime = RuntimeText(e->st.key);
         it.charging = !offline && !e->st.asleep && e->st.charging;
         it.full = !offline && (e->st.full || (e->st.charging && it.percent >= 100));
         it.dim = ShouldDim(e->st);
@@ -710,6 +724,12 @@ void SetDimSleeping(bool on) {
     g_dimSleeping = on;
     SaveDimSleeping(on);
     for (auto& [k, e] : g_entries) ApplyEntry(e);
+    UpdateWidget();
+}
+
+void SetShowRuntime(bool on) {
+    g_showRuntime = on;
+    SaveShowRuntime(on);
     UpdateWidget();
 }
 
@@ -870,6 +890,9 @@ void ShowMenu() {
     AppendMenuW(m, MF_STRING | (g_showDisconnectedDevices ? MF_CHECKED : 0), ID_SHOW_DISCONNECTED, T(L"Show disconnected devices"));
     AppendMenuW(m, MF_STRING | (g_dimSleeping ? MF_CHECKED : 0), ID_DIM_SLEEPING, T(L"Dim sleeping devices"));
     AppendMenuW(m, MF_STRING | (g_recordHistory ? MF_CHECKED : 0), ID_RECORD_HISTORY, T(L"Record battery history"));
+    // The estimate is computed from recorded history and drawn only by the taskbar widget.
+    UINT runtimeFlags = MF_STRING | (g_showRuntime ? MF_CHECKED : 0) | (g_recordHistory && g_wantWidget ? 0 : MF_GRAYED);
+    AppendMenuW(m, runtimeFlags, ID_SHOW_RUNTIME, T(L"Show estimated time remaining"));
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (g_wantWidget ? MF_CHECKED : 0), ID_MODE_WIDGET, T(L"Show on the taskbar (icon + percentage)"));
     AppendMenuW(m, MF_STRING | (!g_wantWidget ? MF_CHECKED : 0), ID_MODE_TRAY, T(L"Show as tray icons"));
@@ -956,7 +979,8 @@ void ShowMenu() {
         case ID_HIDE_LAST_KNOWN: SetHideLastKnown(!g_hideLastKnown); break;
         case ID_SHOW_DISCONNECTED: SetShowDisconnectedDevices(!g_showDisconnectedDevices); break;
         case ID_DIM_SLEEPING: SetDimSleeping(!g_dimSleeping); break;
-        case ID_RECORD_HISTORY: g_recordHistory = !g_recordHistory; SaveRecordHistory(g_recordHistory); break;
+        case ID_RECORD_HISTORY: g_recordHistory = !g_recordHistory; SaveRecordHistory(g_recordHistory); UpdateWidget(); break;
+        case ID_SHOW_RUNTIME: SetShowRuntime(!g_showRuntime); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
         case ID_MONITOR_ALL: SetWidgetMonitor(L"all"); break;
         case ID_LANG_AUTO: SetLanguage(L""); break;
@@ -1287,6 +1311,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_showDisconnectedDevices = LoadShowDisconnectedDevices();
     g_dimSleeping = LoadDimSleeping();
     g_recordHistory = LoadRecordHistory();
+    g_showRuntime = LoadShowRuntime();
     g_widgetBackground = LoadWidgetBackground();
     g_brandColors = LoadBrandColors();
     g_stacked = LoadStacked();

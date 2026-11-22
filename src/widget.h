@@ -12,6 +12,7 @@ struct WidgetItem {
     DeviceKind kind = DeviceKind::Other;
     int  percent  = -1;     // -1 = unknown
     std::wstring text;      // shown instead of the percentage when set (coarse levels like "Low")
+    std::wstring runtime;   // conservative remaining-time estimate, shown below the percentage
     bool charging = false;
     bool full     = false;  // on power and fully charged: a green check mark instead of the bolt
     bool dim      = false;  // asleep / stale value

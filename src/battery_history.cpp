@@ -567,6 +567,13 @@ void Observe(const std::wstring& key, int percent, bool charging) {
     }
 }
 
+RuntimeEstimate RuntimeFor(const std::wstring& key) {
+    if (key.empty()) return {};
+    const int64_t now = UtcNow();
+    const auto points = g_demo ? DemoSamples(now) : g_store.For(key, now - kRetentionSeconds, now);
+    return EstimateRuntime(points, now);
+}
+
 void Show(HWND owner, const std::wstring& key, const std::wstring& displayName) {
     if (key.empty()) return;
     g_key = key;

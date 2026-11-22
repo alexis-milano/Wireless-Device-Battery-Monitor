@@ -386,6 +386,8 @@ struct Piece {
     int bx = 0, by = 0;
     int barPct = -1;  // >= 0: thin level bar under the text (branded devices)
     Rgb barColor{};
+    int below = 0;    // height reserved below this piece for an anchored secondary line
+    bool outline = false;
     Mask halo;        // glow drawn behind the glyph (branded devices)
     int haloR = 0, haloAlpha = 0;
     int px = INT_MIN, py = 0;  // fixed top-left position (stacked and vertical layouts); INT_MIN = flow left to right
@@ -406,6 +408,7 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
     HFONT bolt = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
     HFONT text = MakeFont(Px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI", Px(12));
     HFONT caption = MakeFont(std::max(8, Px(7)), FW_SEMIBOLD, L"Segoe UI Variable Text", L"Segoe UI");  // never under 8 px
+    HFONT runtime = MakeFont(std::max(10, Px(10)), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
 
     std::vector<Piece> out;
     struct Slot { int icon, label, bolt; };  // indices of one device's pieces
@@ -437,11 +440,20 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
         out.push_back(std::move(label));
         if (mark) out.push_back({ RenderMask(std::wstring(1, it.full ? kCheck : kBolt), bolt, g_light), it.full ? full : charge, a, 0 });
         out.back().gapAfter = i + 1 < g_items.size() ? Px(14) : 0;
+        if (!it.runtime.empty()) {
+            Piece eta{ RenderMask(it.runtime, runtime, g_light), fg, a, 0 };
+            eta.anchor = (int)glyph + 1;
+            eta.bx = (out[eta.anchor].m.w - eta.m.w) / 2;
+            eta.by = out[eta.anchor].m.h + (out[eta.anchor].barPct >= 0 ? Px(5) : 0) + Px(3);
+            out[eta.anchor].below = eta.m.h + (out[eta.anchor].barPct >= 0 ? Px(5) : 0) + Px(3);
+            out.push_back(std::move(eta));
+        }
         if (!it.label.empty()) {  // tiny caption in the bottom-right corner of the icon
             Piece c{ RenderMask(it.label, caption, g_light), fg, a, 0 };
             c.anchor = (int)glyph;
             c.bx = out[glyph].m.w - c.m.w + Px(3);
             c.by = out[glyph].m.h - c.m.h + Px(3);
+            c.outline = true;
             out.push_back(c);
         }
     }
@@ -449,13 +461,14 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
     DeleteObject(bolt);
     DeleteObject(text);
     DeleteObject(caption);
+    DeleteObject(runtime);
 
     height = barH;
     const int rowGap = Px(2), barRoom = Px(5);  // barRoom: space for a brand level bar under the text
     int iconH = 0, textH = 0;
     for (const Slot& s : slots) {
         iconH = std::max(iconH, out[s.icon].m.h);
-        textH = std::max(textH, out[s.label].m.h);
+        textH = std::max(textH, out[s.label].m.h + out[s.label].below);
     }
     bool stacked = !g_vertical && g_stacked && !slots.empty() && barH >= iconH + rowGap + textH + barRoom + Px(6);
     if (g_vertical) {
@@ -485,7 +498,7 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
                 out[s.bolt].px = lb.px + lb.m.w + Px(2);
                 out[s.bolt].py = y + (lb.m.h - out[s.bolt].m.h) / 2;
             }
-            y += lb.m.h + (lb.barPct >= 0 ? barRoom : 0) + Px(8);
+            y += lb.m.h + std::max(lb.below, lb.barPct >= 0 ? barRoom : 0) + Px(8);
         }
         height = y;
         return out;
@@ -552,7 +565,7 @@ void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
         if (p.anchor < 0) {
             bool fixed = p.px != INT_MIN;  // stacked / vertical layout: Layout() placed it
             xs[i] = fixed ? p.px : x;
-            ys[i] = fixed ? p.py : (H - p.m.h) / 2;
+            ys[i] = fixed ? p.py : (H - p.m.h - p.below) / 2;
             if (p.haloR) cv.Draw(p.halo, xs[i] - p.haloR, ys[i] - p.haloR, p.color, p.haloAlpha * p.alpha / 255);
             if (p.barPct >= 0) {
                 // The bar spans the text's width, like Synapse's battery bar; in the row layout text and bar
@@ -569,9 +582,10 @@ void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
         } else {  // caption: one-pixel outline in the taskbar's colour so it reads over the icon's lines
             xs[i] = xs[p.anchor] + p.bx;
             ys[i] = ys[p.anchor] + p.by;
-            for (int oy = -1; oy <= 1; oy++)
-                for (int ox = -1; ox <= 1; ox++)
-                    if (ox || oy) cv.Draw(p.m, xs[i] + ox, ys[i] + oy, barColor, 255);
+            if (p.outline)
+                for (int oy = -1; oy <= 1; oy++)
+                    for (int ox = -1; ox <= 1; ox++)
+                        if (ox || oy) cv.Draw(p.m, xs[i] + ox, ys[i] + oy, barColor, 255);
         }
         cv.Draw(p.m, xs[i], ys[i], p.color, p.alpha);
     }

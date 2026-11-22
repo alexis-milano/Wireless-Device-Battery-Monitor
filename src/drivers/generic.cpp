@@ -329,6 +329,10 @@ void PollBluetooth(PollContext& ctx) {
         if (IsDuplicateBluetoothDevice(s, ctx.out)) continue;
         s.via = L"Bluetooth";
         s.percent = f.pct;
+        // Windows can remove a sleeping Bluetooth keyboard's battery-service node from the
+        // device tree until the next key press. Retain its last reported level instead of
+        // making the taskbar widget flicker out while it is asleep.
+        s.graceSec = 1800;
         auto cod = containerCod.find(cid);
         s.kind = cod != containerCod.end() ? KindFromClassOfDevice(cod->second) : DeviceKind::Other;
         if (s.kind == DeviceKind::Other) {
