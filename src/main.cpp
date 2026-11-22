@@ -25,6 +25,7 @@
 #include "report.h"
 #include "rename_dialog.h"
 #include "widget.h"
+#include "system_metrics.h"
 #include "update_win.h"
 #include "update_apply.h"
 
@@ -33,6 +34,7 @@ namespace {
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_RESULTS = WM_APP + 2;
 constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
+constexpr UINT WM_METRICS = WM_APP + 4;
 constexpr UINT_PTR TIMER_DEBOUNCE = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
 constexpr UINT_PTR TIMER_ALERT_ICON = 3;
@@ -46,6 +48,7 @@ constexpr UINT ALERT_ICON_ID = 2;
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT,
     ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING, ID_SHOW_RUNTIME,
+    ID_METRIC_CPU, ID_METRIC_CPU_TEMP, ID_METRIC_MEM, ID_METRIC_GPU, ID_METRIC_GPU_TEMP,
     ID_POLL_FIRST = 500,  // "Check battery every": ID_POLL_FIRST + 0..7
     ID_UPDATE = 200, ID_AUTO_UPDATE,
     ID_LANG_AUTO = 400, ID_LANG_ADD, ID_LANG_FIRST,  // "Language": ID_LANG_FIRST + 0..63
@@ -75,6 +78,7 @@ bool g_showDisconnectedDevices = false;  // opt-in, explicit driver-reported off
 bool g_dimSleeping = true;  // dim a sleeping device's last known value (menu option, on by default)
 bool g_recordHistory = true;  // save readings for "Battery history..." (menu option, on by default)
 bool g_showRuntime = true;    // estimated time remaining under the widget percentage (menu option, on by default)
+system_metrics::Wanted g_metrics;  // system monitor shown in the widget (menu options, all off by default)
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
@@ -286,6 +290,22 @@ bool LoadRecordHistory() { return LoadBoolSetting(L"RecordBatteryHistory", true)
 void SaveRecordHistory(bool on) { SaveBoolSetting(L"RecordBatteryHistory", on); }
 bool LoadShowRuntime() { return LoadBoolSetting(L"ShowRuntimeEstimate", true); }
 void SaveShowRuntime(bool on) { SaveBoolSetting(L"ShowRuntimeEstimate", on); }
+system_metrics::Wanted LoadMetrics() {
+    system_metrics::Wanted w;
+    w.cpu = LoadBoolSetting(L"ShowCpuUsage", false);
+    w.cpuTemp = LoadBoolSetting(L"ShowCpuTemperature", false);
+    w.mem = LoadBoolSetting(L"ShowMemoryUsage", false);
+    w.gpu = LoadBoolSetting(L"ShowGpuUsage", false);
+    w.gpuTemp = LoadBoolSetting(L"ShowGpuTemperature", false);
+    return w;
+}
+void SaveMetrics(const system_metrics::Wanted& w) {
+    SaveBoolSetting(L"ShowCpuUsage", w.cpu);
+    SaveBoolSetting(L"ShowCpuTemperature", w.cpuTemp);
+    SaveBoolSetting(L"ShowMemoryUsage", w.mem);
+    SaveBoolSetting(L"ShowGpuUsage", w.gpu);
+    SaveBoolSetting(L"ShowGpuTemperature", w.gpuTemp);
+}
 bool LoadWidgetBackground() { return LoadBoolSetting(L"WidgetBackground", false); }
 void SaveWidgetBackground(bool on) { SaveBoolSetting(L"WidgetBackground", on); }
 std::wstring LoadWidgetMonitor() {
@@ -596,6 +616,35 @@ std::vector<TrayEntry*> OrderedEntries(bool shownOnly) {
     return list;
 }
 
+// System monitor: one widget item per component, usage as the main text and the temperature on the line
+// below (or as the main text when only the temperature is shown). Values not available yet are left out.
+void AppendMetricItems(std::vector<WidgetItem>& items, std::wstring& tip) {
+    if (!g_metrics.Any()) return;
+    const system_metrics::Snapshot s = system_metrics::Latest();
+    auto pct = [](int v) { return std::to_wstring(v) + L"%"; };
+    auto deg = [](int v) { return std::to_wstring(v) + L"\u00B0"; };
+    auto add = [&](const wchar_t* tag, bool wantUse, int use, bool wantTemp, int temp, const std::wstring& name) {
+        const bool hasUse = wantUse && use >= 0, hasTemp = wantTemp && temp >= 0;
+        std::wstring line = name + L": ";
+        if (wantUse) line += hasUse ? pct(use) : T(L"unavailable");
+        if (wantUse && wantTemp) line += L", ";
+        if (wantTemp) line += hasTemp ? std::to_wstring(temp) + L" \u00B0C" : T(L"temperature unavailable");
+        tip += L"\n" + line;
+        if (!hasUse && !hasTemp) return;
+        WidgetItem it;
+        it.iconText = tag;
+        it.text = hasUse ? pct(use) : deg(temp);
+        if (hasUse && hasTemp) it.runtime = deg(temp);
+        it.low = (hasUse && use >= 90) || (hasTemp && temp >= 90);
+        items.push_back(it);
+    };
+    if (g_metrics.cpu || g_metrics.cpuTemp)
+        add(L"CPU", g_metrics.cpu, s.cpuPercent, g_metrics.cpuTemp, s.cpuTempC, T(L"Processor"));
+    if (g_metrics.gpu || g_metrics.gpuTemp)
+        add(L"GPU", g_metrics.gpu, s.gpuPercent, g_metrics.gpuTemp, s.gpuTempC, T(L"Graphics card"));
+    if (g_metrics.mem) add(L"RAM", true, s.memPercent, false, -1, T(L"Memory"));
+}
+
 void UpdateWidget() {
     if (!g_useWidget) return;
     std::vector<TrayEntry*> list = OrderedEntries(true);
@@ -626,6 +675,7 @@ void UpdateWidget() {
         tip += DisplayName(*e) + L": " + StatusText(*e);
     }
     if (tip.empty()) tip = std::wstring(L"BatteryHub: ") + T(L"No devices with battery info found");
+    AppendMetricItems(items, tip);
     widget::SetItems(items, tip);
 }
 
@@ -730,6 +780,13 @@ void SetDimSleeping(bool on) {
 void SetShowRuntime(bool on) {
     g_showRuntime = on;
     SaveShowRuntime(on);
+    UpdateWidget();
+}
+
+void ToggleMetric(bool system_metrics::Wanted::*field) {
+    g_metrics.*field = !(g_metrics.*field);
+    SaveMetrics(g_metrics);
+    system_metrics::SetWanted(g_metrics);
     UpdateWidget();
 }
 
@@ -893,6 +950,19 @@ void ShowMenu() {
     // The estimate is computed from recorded history and drawn only by the taskbar widget.
     UINT runtimeFlags = MF_STRING | (g_showRuntime ? MF_CHECKED : 0) | (g_recordHistory && g_wantWidget ? 0 : MF_GRAYED);
     AppendMenuW(m, runtimeFlags, ID_SHOW_RUNTIME, T(L"Show estimated time remaining"));
+    {
+        // System monitor, drawn by the taskbar widget only (like the runtime estimate).
+        HMENU sys = CreatePopupMenu();
+        auto item = [&](UINT id, bool on, const wchar_t* text) {
+            AppendMenuW(sys, MF_STRING | (on ? MF_CHECKED : 0), id, T(text));
+        };
+        item(ID_METRIC_CPU, g_metrics.cpu, L"Processor usage");
+        item(ID_METRIC_CPU_TEMP, g_metrics.cpuTemp, L"Processor temperature (needs LibreHardwareMonitor or HWiNFO)");
+        item(ID_METRIC_GPU, g_metrics.gpu, L"Graphics card usage");
+        item(ID_METRIC_GPU_TEMP, g_metrics.gpuTemp, L"Graphics card temperature");
+        item(ID_METRIC_MEM, g_metrics.mem, L"Memory usage");
+        AppendMenuW(m, MF_POPUP | (g_wantWidget ? 0 : MF_GRAYED), (UINT_PTR)sys, T(L"System monitor"));
+    }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (g_wantWidget ? MF_CHECKED : 0), ID_MODE_WIDGET, T(L"Show on the taskbar (icon + percentage)"));
     AppendMenuW(m, MF_STRING | (!g_wantWidget ? MF_CHECKED : 0), ID_MODE_TRAY, T(L"Show as tray icons"));
@@ -981,6 +1051,11 @@ void ShowMenu() {
         case ID_DIM_SLEEPING: SetDimSleeping(!g_dimSleeping); break;
         case ID_RECORD_HISTORY: g_recordHistory = !g_recordHistory; SaveRecordHistory(g_recordHistory); UpdateWidget(); break;
         case ID_SHOW_RUNTIME: SetShowRuntime(!g_showRuntime); break;
+        case ID_METRIC_CPU: ToggleMetric(&system_metrics::Wanted::cpu); break;
+        case ID_METRIC_CPU_TEMP: ToggleMetric(&system_metrics::Wanted::cpuTemp); break;
+        case ID_METRIC_MEM: ToggleMetric(&system_metrics::Wanted::mem); break;
+        case ID_METRIC_GPU: ToggleMetric(&system_metrics::Wanted::gpu); break;
+        case ID_METRIC_GPU_TEMP: ToggleMetric(&system_metrics::Wanted::gpuTemp); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
         case ID_MONITOR_ALL: SetWidgetMonitor(L"all"); break;
         case ID_LANG_AUTO: SetLanguage(L""); break;
@@ -1116,6 +1191,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_WIDGET_CLICK:
             ShowMenu();
             return 0;
+        case WM_METRICS:
+            UpdateWidget();
+            return 0;
         case WM_ENDSESSION:  // sign-out / shutdown / installer restart manager
             if (wp) DestroyWindow(h);
             return 0;
@@ -1145,6 +1223,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(h, TIMER_ALERT_ICON);
             if (g_alertIconAdded) { TrayDelete(ALERT_ICON_ID); g_alertIconAdded = false; }
             widget::Destroy();
+            system_metrics::Stop();
             SetEvent(g_stopEvt);
             if (g_worker) WaitForSingleObject(g_worker, 5000);
             for (auto& [k, e] : g_entries) {
@@ -1312,6 +1391,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_dimSleeping = LoadDimSleeping();
     g_recordHistory = LoadRecordHistory();
     g_showRuntime = LoadShowRuntime();
+    g_metrics = LoadMetrics();
     g_widgetBackground = LoadWidgetBackground();
     g_brandColors = LoadBrandColors();
     g_stacked = LoadStacked();
@@ -1330,6 +1410,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     UpdatePlaceholder();  // something to click on until the first poll finishes
     SetTimer(g_hwnd, TIMER_WIDGET, 1000, nullptr);
     g_worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+    system_metrics::Start(g_hwnd, WM_METRICS);
+    system_metrics::SetWanted(g_metrics);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {

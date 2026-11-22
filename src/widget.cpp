@@ -409,6 +409,7 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
     HFONT text = MakeFont(Px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI", Px(12));
     HFONT caption = MakeFont(std::max(8, Px(7)), FW_SEMIBOLD, L"Segoe UI Variable Text", L"Segoe UI");  // never under 8 px
     HFONT runtime = MakeFont(std::max(10, Px(10)), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
+    HFONT tag = MakeFont(std::max(9, Px(10)), FW_SEMIBOLD, L"Segoe UI Variable Text", L"Segoe UI");  // system monitor tags
 
     std::vector<Piece> out;
     struct Slot { int icon, label, bolt; };  // indices of one device's pieces
@@ -424,7 +425,9 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
         bool branded = it.accent != Accent::None;
         BrandColor bc = AccentColor(it.accent, g_light);
         Rgb accent{ bc.r, bc.g, bc.b };
-        Piece icon{ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons, g_light), branded ? accent : fg, a, Px(5) };
+        Piece icon{ !it.iconText.empty() ? RenderMask(it.iconText, tag, g_light)
+                                         : RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons, g_light),
+                    branded ? accent : fg, it.iconText.empty() ? a : a * 170 / 255, Px(5) };
         if (branded && !it.dim) {
             icon.haloR = Px(3);
             icon.halo = Halo(icon.m, icon.haloR);
@@ -462,6 +465,7 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
     DeleteObject(text);
     DeleteObject(caption);
     DeleteObject(runtime);
+    DeleteObject(tag);
 
     height = barH;
     const int rowGap = Px(2), barRoom = Px(5);  // barRoom: space for a brand level bar under the text

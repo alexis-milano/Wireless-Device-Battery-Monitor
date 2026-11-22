@@ -12,7 +12,8 @@ struct WidgetItem {
     DeviceKind kind = DeviceKind::Other;
     int  percent  = -1;     // -1 = unknown
     std::wstring text;      // shown instead of the percentage when set (coarse levels like "Low")
-    std::wstring runtime;   // conservative remaining-time estimate, shown below the percentage
+    std::wstring runtime;   // secondary line below the main text: remaining-time estimate, or a temperature
+    std::wstring iconText;  // drawn in place of the device icon when set (system monitor tags: "CPU", "RAM", "GPU")
     bool charging = false;
     bool full     = false;  // on power and fully charged: a green check mark instead of the bolt
     bool dim      = false;  // asleep / stale value
