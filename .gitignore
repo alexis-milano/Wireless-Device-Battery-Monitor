@@ -1,4 +1,6 @@
 build/
+build_msvc/
+build-cmake/
 wireless-battery
 *.exe
 *.o
